@@ -553,13 +553,15 @@ export async function getStudySeries({ study, plots, count = 100, from, to, _dep
       (() => {
         const q = ${request};
         const fail = error => ({ error });
-        const text = x => typeof x === 'string' && x.length <= 256 ? x : null;
+        const text = x => typeof x === 'string' && x.trim() && x.length <= 256 ? x : null;
         const chart = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;
         const api = window.TradingViewApi.activeChart();
         const sources = chart.model().model().dataSources();
         const matches = sources.filter(s => s.metaInfo && (s.id?.() === q.study || s.metaInfo().description === q.study));
         if (matches.length !== 1) return fail(matches.length ? 'ambiguous study selector' : 'study unavailable');
         const s = matches[0], m = s.metaInfo(), inputs = s.inputs?.() || {};
+        const identity = { entity_id: text(s.id()), name: text(m.description), script_id: text(inputs.pineId), script_version: text(inputs.pineVersion) };
+        if (Object.values(identity).some(value => !value)) return fail('study identity unavailable');
         if (!Array.isArray(m.plots)) return fail('plot metadata unavailable');
         const selected = [];
         for (const selector of q.plots) {
@@ -606,7 +608,7 @@ export async function getStudySeries({ study, plots, count = 100, from, to, _dep
         const symbol = text(api.symbol()), timeframe = text(api.resolution());
         if (!symbol || !timeframe) return fail('market or timeframe unavailable');
         return { symbol, timeframe, retrieved_at: new Date().toISOString(),
-          study: { entity_id: text(s.id()), name: text(m.description), script_id: text(inputs.pineId), script_version: text(inputs.pineVersion), settings, omitted_settings: omitted },
+          study: { ...identity, settings, omitted_settings: omitted },
           plots: selected.map(p => ({ id: p.id, name: p.title, type: p.type })), fills, rows,
           scan_limit_reached: scanned === maxScan, count_limit_reached: rows.length === q.count };
       })()
