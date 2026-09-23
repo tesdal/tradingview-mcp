@@ -1,6 +1,7 @@
 /**
  * Core data access logic.
  */
+import { createHash } from 'node:crypto';
 import { evaluate, evaluateAsync, KNOWN_PATHS, safeString } from '../connection.js';
 import { waitForChartReady } from '../wait.js';
 
@@ -533,6 +534,93 @@ export async function getStudyValues() {
     })()
   `);
   return { success: true, study_count: data?.length || 0, studies: data || [] };
+}
+
+/** Read published plot columns, independently of data-window visibility.
+ * No source code, opaque inputs, contact inference or repaint guarantee.
+ */
+export async function getStudySeries({ study, plots, count = 100, from, to, _deps } = {}) {
+  if (typeof study !== 'string' || !study.trim() || study.length > 256) throw new Error('study must be an exact name or entity ID');
+  if (!Array.isArray(plots) || !plots.length || plots.length > 16 || plots.some(p => typeof p !== 'string' || !p.trim() || p.length > 256)) throw new Error('plots must contain 1–16 exact names or IDs');
+  if (new Set(plots).size !== plots.length) throw new Error('duplicate plot selectors');
+  if (!Number.isInteger(count) || count < 1 || count > 500) throw new Error('count must be an integer from 1 to 500');
+  for (const t of [from, to]) if (t !== undefined && (!Number.isSafeInteger(t) || t < 0)) throw new Error('time bounds must be nonnegative integer epoch seconds');
+  if (from !== undefined && to !== undefined && from > to) throw new Error('time bounds are reversed');
+  const request = JSON.stringify({ study, plots, count, from, to });
+  let result;
+  try {
+    result = await (_deps?.evaluate || evaluate)(`
+      (() => {
+        const q = ${request};
+        const fail = error => ({ error });
+        const text = x => typeof x === 'string' && x.trim() && x.length <= 256 ? x : null;
+        const chart = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;
+        const api = window.TradingViewApi.activeChart();
+        const sources = chart.model().model().dataSources();
+        const matches = sources.filter(s => s.metaInfo && (s.id?.() === q.study || s.metaInfo().description === q.study));
+        if (matches.length !== 1) return fail(matches.length ? 'ambiguous study selector' : 'study unavailable');
+        const s = matches[0], m = s.metaInfo(), inputs = s.inputs?.() || {};
+        const identity = { entity_id: text(s.id()), name: text(m.description), script_id: text(inputs.pineId), script_version: text(inputs.pineVersion) };
+        if (Object.values(identity).some(value => !value)) return fail('study identity unavailable');
+        if (!Array.isArray(m.plots)) return fail('plot metadata unavailable');
+        const selected = [];
+        for (const selector of q.plots) {
+          const found = m.plots.map((p, index) => ({ ...p, index, title: m.styles?.[p.id]?.title }))
+            .filter(p => p.id === selector || p.title === selector);
+          if (found.length !== 1) return fail(found.length ? 'ambiguous plot selector' : 'plot unavailable');
+          if (found[0].type !== 'line') return fail('only numeric line plots are supported');
+          if (selected.some(p => p.id === found[0].id)) return fail('duplicate selected plot');
+          if (!text(found[0].id) || !text(found[0].title)) return fail('plot identity unavailable');
+          selected.push(found[0]);
+        }
+        const data = s.data?.();
+        if (!Array.isArray(data?._items) || !data._items.length) return fail('study rows unavailable');
+        const rows = [], maxScan = 10000;
+        let scanned = 0;
+        for (let i = data._items.length - 1; i >= 0 && scanned < maxScan && rows.length < q.count; i--, scanned++) {
+          const values = data._items[i]?.value;
+          const time = values?.[0];
+          if (!Array.isArray(values) || !Number.isSafeInteger(time) || time < 0) return fail('invalid study timestamp');
+          if ((q.from !== undefined && time < q.from) || (q.to !== undefined && time > q.to)) continue;
+          const row = { time, completion: 'unknown', values: {} };
+          for (const p of selected) {
+            const v = values[p.index + 1];
+            const status = v === undefined ? 'absent' : v === null ? 'null' : typeof v !== 'number' ? 'nonnumeric' : !Number.isFinite(v) ? 'nonfinite' : 'present';
+            row.values[p.id] = { status, value: status === 'present' ? v : null };
+          }
+          rows.push(row);
+        }
+        rows.reverse();
+        if (!rows.length) return fail('rows unavailable within requested bounds and scan limit');
+        if (rows.some((r, i) => i && r.time <= rows[i - 1].time)) return fail('study timestamps are not strictly increasing');
+        const settings = {};
+        let omitted = 0;
+        for (const key of Object.keys(inputs).filter(k => k.startsWith('in_'))) {
+          const definition = m.inputs?.find(d => d.id === key);
+          const value = inputs[key]?.v;
+          if (Object.keys(settings).length < 64 && key.length <= 64 &&
+              ((['integer', 'float'].includes(definition?.type) && typeof value === 'number' && Number.isFinite(value)) ||
+               (definition?.type === 'bool' && typeof value === 'boolean'))) settings[key] = value;
+          else omitted++;
+        }
+        const fills = (m.filledAreas || []).filter(f => f.type === 'plot_plot' && selected.some(p => p.id === f.objAId || p.id === f.objBId)).slice(0, 32)
+          .map(f => ({ id: text(f.id), title: text(f.title), objAId: text(f.objAId), objBId: text(f.objBId) }));
+        const symbol = text(api.symbol()), timeframe = text(api.resolution());
+        if (!symbol || !timeframe) return fail('market or timeframe unavailable');
+        return { symbol, timeframe, retrieved_at: new Date().toISOString(),
+          study: { ...identity, settings, omitted_settings: omitted },
+          plots: selected.map(p => ({ id: p.id, name: p.title, type: p.type })), fills, rows,
+          scan_limit_reached: scanned === maxScan, count_limit_reached: rows.length === q.count };
+      })()
+    `);
+  } catch {
+    // CDP errors can include page content; never echo it through this reader.
+    throw new Error('Study series access failed');
+  }
+  if (!result || result.error) throw new Error(result?.error || 'Study series unavailable');
+  result.study.settings_digest = createHash('sha256').update(JSON.stringify(Object.entries(result.study.settings).sort())).digest('hex');
+  return { success: true, ...result, requested: { count, from: from ?? null, to: to ?? null },
+    limitations: 'Bar-open timestamps and retrieved plot snapshots only; completion, historical intrabar path and repaint behavior are not established. Settings digest covers only the disclosed safe subset.' };
 }
 
 export async function getPineLines({ study_filter, verbose } = {}) {

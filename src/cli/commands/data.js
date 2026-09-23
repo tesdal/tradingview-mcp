@@ -26,6 +26,19 @@ register('values', {
 register('data', {
   description: 'Advanced data tools (lines, labels, tables, boxes, strategy, trades, equity, depth)',
   subcommands: new Map([
+    ['series', {
+      description: 'Read bounded named study plots, including hidden fill endpoints',
+      options: {
+        study: { type: 'string', description: 'Exact study name or entity ID' },
+        plots: { type: 'string', description: 'Comma-separated exact plot names or IDs (max 16)' },
+        count: { type: 'string', short: 'n', description: 'Row count (1–500, default 100)' },
+        from: { type: 'string', description: 'Inclusive bar-open epoch seconds' },
+        to: { type: 'string', description: 'Inclusive bar-open epoch seconds' },
+      },
+      handler: opts => core.getStudySeries({ study: opts.study, plots: opts.plots?.split(',').map(p => p.trim()),
+        count: opts.count === undefined ? undefined : Number(opts.count),
+        from: opts.from === undefined ? undefined : Number(opts.from), to: opts.to === undefined ? undefined : Number(opts.to) }),
+    }],
     ['lines', {
       description: 'Get Pine Script line.new() price levels',
       options: {
