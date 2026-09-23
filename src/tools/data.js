@@ -3,6 +3,13 @@ import { jsonResult } from './_format.js';
 import * as core from '../core/data.js';
 
 export function registerDataTools(server) {
+  server.tool('data_get_study_series', 'Read bounded selected published plot series, including hidden fill endpoints; no contact or repaint inference.', {
+    study: z.string(), plots: z.array(z.string()).min(1).max(16), count: z.number().int().min(1).max(500).optional(),
+    from: z.number().int().nonnegative().optional(), to: z.number().int().nonnegative().optional(),
+  }, async (request) => {
+    try { return jsonResult(await core.getStudySeries(request)); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
   server.tool('data_get_ohlcv', 'Get OHLCV bar data from the chart. Use summary=true for compact stats instead of all bars (saves context).', {
     count: z.coerce.number().optional().describe('Number of bars to retrieve (max 500, default 100)'),
     summary: z.coerce.boolean().optional().describe('Return summary stats (high, low, open, close, avg volume, range) instead of all bars — much smaller output'),

@@ -162,12 +162,27 @@ tv pane symbol 1 ES1!              # set pane symbol
 tv stream quote | jq '.close'      # monitor price changes
 ```
 
+Read selected published plot columns, including fill endpoints hidden from the data window:
+
+```bash
+tv data series --study "Example Ribbon" --plots "High,Low,Basis" --count 20
+```
+
+Selectors are exact study names/entity IDs and plot names/IDs; ambiguity fails explicitly.
+Optional `--from`/`--to` bound inclusive bar-open epoch seconds. Output includes script
+identity, a digest of disclosed numeric/boolean settings, fill links and timestamped
+values with explicit missingness. Counts are capped at 500 (16 plots); scanning is
+limited to 10,000 loaded rows, with limit flags. Completion is reported as unknown:
+these snapshots do not establish historical intrabar paths or repaint behavior.
+No protected script or opaque inputs are returned. Existing `values` remains the
+current visible data-window reader. MCP exposes the same reader as `data_get_study_series`.
+
 ### All Commands
 
 ```
 tv status / launch / state / symbol / timeframe / type / info / search
 tv quote / ohlcv / values
-tv data lines/labels/tables/boxes/strategy/trades/equity/depth/indicator
+tv data series/lines/labels/tables/boxes/strategy/trades/equity/depth/indicator
 tv pine get/set/compile/analyze/check/save/new/open/list/errors/console
 tv draw shape/list/get/remove/clear
 tv alert list/create/delete
